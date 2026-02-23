@@ -1,0 +1,88 @@
+# MinIO Helm values (template anonimizado)
+
+mode: standalone
+replicas: 1
+drivesPerNode: 1
+
+rootUser: ""
+rootPassword: ""
+existingSecret: minio-secrets
+
+persistence:
+  enabled: true
+  size: 100Gi
+  accessMode: ReadWriteOnce
+  storageClass: ""
+
+resources:
+  requests:
+    cpu: "200m"
+    memory: 1Gi
+  limits:
+    cpu: "1"
+    memory: 2Gi
+
+service:
+  type: ClusterIP
+  port: "9000"
+
+consoleService:
+  type: ClusterIP
+  port: "9001"
+
+apiAllowlist:
+  sourceRange:
+    - 203.0.113.10/32
+    - 10.42.0.0/16
+    - 10.43.0.0/16
+    - 198.51.100.20/32
+
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.tls.certresolver: cloudflare
+    traefik.ingress.kubernetes.io/router.middlewares: minio-minio-api-allowlist@kubernetescrd
+  path: /
+  hosts:
+    - minio.example.com
+
+consoleIngress:
+  enabled: true
+  ingressClassName: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.tls.certresolver: cloudflare
+  path: /
+  hosts:
+    - minio-console.example.com
+
+environment:
+  MINIO_SERVER_URL: "https://minio.example.com"
+  MINIO_BROWSER_REDIRECT_URL: "https://minio-console.example.com"
+  MINIO_API_ROOT_ACCESS: "off"
+
+oidc:
+  enabled: true
+  configUrl: "https://auth.example.com/realms/example/.well-known/openid-configuration"
+  clientId: "minio"
+  clientSecret: ""
+  existingClientSecretName: "minio-secrets"
+  existingClientIdKey: "oidcClientId"
+  existingClientSecretKey: "oidcClientSecret"
+  claimName: "policy"
+  scopes: "openid,profile,email"
+  redirectUri: "https://minio-console.example.com/oauth_callback"
+  claimPrefix: ""
+  comment: ""
+  displayName: "Keycloak"
+
+users: []
+buckets: []
+policies: []
+
+networkPolicy:
+  enabled: false

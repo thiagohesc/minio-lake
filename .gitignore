@@ -201,6 +201,11 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Kubernetes secrets (somente templates devem ser versionados)
+k8s/overlays/*/secrets/*.yaml
+!k8s/templates/minio-secrets-template.yaml
+values.prod.yaml
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
