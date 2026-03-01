@@ -47,6 +47,33 @@ No `values.prod.yaml`, ajustar:
 - `environment.MINIO_BROWSER_REDIRECT_URL`
 - `apiAllowlist.sourceRange` (IPs/CIDRs permitidos na API)
 
+### 2.1) Keycloak (provisionamento automatico)
+
+Use o script para criar/ajustar clients e mappers no realm:
+
+```bash
+export KEYCLOAK_URL="https://auth.example.com"
+export KC_REALM="example"
+export KC_ADMIN_USER="admin"
+export KC_ADMIN_PASSWORD="SENHA_ADMIN"
+export MINIO_CONSOLE_URL="https://minio-console.example.com"
+
+make keycloak-setup
+```
+
+O script cria/atualiza:
+- client `minio` (Authorization Code Flow) com redirect `.../oauth_callback`
+- mapper `policy` no client `minio` lendo atributo de usuario `policy`
+- service account habilitado no client `minio` para STS (`client_credentials`)
+- atributo `policy` no service account do client `minio` (default: `readwrite`)
+
+Apos executar, atualize `k8s/overlays/prod/secrets/minio-secrets-prod.yaml` com:
+- `oidcClientId` (normalmente `minio`)
+- `oidcClientSecret` (valor exibido pelo script)
+
+Para acesso ao console, no usuario do Keycloak defina atributo:
+- `policy=consoleAdmin`
+
 ### 3) Allowlist da API
 
 A allowlist da API e gerada a partir de `apiAllowlist.sourceRange` em `values.prod.yaml`.
@@ -65,6 +92,7 @@ O script:
 - aplica namespace + secret + middleware de allowlist
 - roda preflight `helm template`
 - executa `helm upgrade --install --wait`
+- aplica `IngressRoute` (Traefik CRD) com `nativeLB=true` para API e Console
 
 ## Comandos uteis
 
@@ -74,16 +102,39 @@ make render
 make pods
 make clean
 make sync-template
+make keycloak-setup
+make restore-retain
 ```
+
+## Restore Com PV Retain
+
+Para recuperar o MinIO apos apagar o namespace (mantendo dados no PV Retain):
+
+```bash
+make restore-retain
+```
+
+O script:
+- reaplica namespace + storageclass `minio-retain`
+- encontra o PV antigo de `minio-data`
+- limpa `claimRef` quando o PV estiver `Released`
+- recria o PVC `minio-data`
+- reaplica o secret e executa `deploy`
 
 ## Modelo recomendado (prod)
 
 - `minio` client no Keycloak: console web (Standard Flow ON).
-- clients de API dedicados (Service Accounts):
-  - `api-admin` -> `policy=consoleAdmin`
-  - `api-ro` -> `policy=readonly`
-  - `api-rw` -> `policy=readwrite`
+- STS via service account do proprio client `minio`.
 - `MINIO_API_ROOT_ACCESS=off` no MinIO.
+
+Checklist de Keycloak para o client `minio`:
+- Client Type: `OpenID Connect`
+- Access Type: `Confidential`
+- Standard Flow: `ON`
+- Direct Access Grants: `OFF`
+- Service Accounts: `ON`
+- Valid Redirect URI: `https://minio-console.example.com/oauth_callback`
+- Web Origins: `https://minio-console.example.com`
 
 ## API S3 com Keycloak (STS)
 
@@ -91,8 +142,8 @@ make sync-template
 
 ```bash
 KC_TOKEN_URL="https://auth.example.com/realms/example/protocol/openid-connect/token"
-CLIENT_ID="api-ro"
-CLIENT_SECRET="SEU_CLIENT_SECRET"
+CLIENT_ID="minio"
+CLIENT_SECRET="OIDC_CLIENT_SECRET_DO_MINIO"
 
 ACCESS_TOKEN=$(curl -s -X POST "$KC_TOKEN_URL" \
   -d "grant_type=client_credentials" \

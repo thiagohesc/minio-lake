@@ -10,9 +10,10 @@ existingSecret: minio-secrets
 
 persistence:
   enabled: true
+  existingClaim: minio-data
   size: 100Gi
   accessMode: ReadWriteOnce
-  storageClass: ""
+  storageClass: "minio-retain"
 
 resources:
   requests:
@@ -44,7 +45,7 @@ ingress:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
     traefik.ingress.kubernetes.io/router.tls.certresolver: cloudflare
-    traefik.ingress.kubernetes.io/router.middlewares: minio-minio-api-allowlist@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: minio-minio-api-allowlist@kubernetescrd,minio-minio-upload-buffering@kubernetescrd
   path: /
   hosts:
     - minio.example.com
@@ -64,6 +65,12 @@ environment:
   MINIO_SERVER_URL: "https://minio.example.com"
   MINIO_BROWSER_REDIRECT_URL: "https://minio-console.example.com"
   MINIO_API_ROOT_ACCESS: "off"
+
+upload:
+  # 3 GiB
+  maxRequestBodyBytes: 3221225472
+  # 32 MiB em memoria, acima disso Traefik usa disco temporario
+  memRequestBodyBytes: 33554432
 
 oidc:
   enabled: true

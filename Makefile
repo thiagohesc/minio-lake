@@ -7,7 +7,7 @@ RELEASE ?= minio
 ENVIRONMENT ?= prod
 VALUES_FILE ?= values.prod.yaml
 
-.PHONY: help deploy clean render pods sync-template
+.PHONY: help deploy clean render pods sync-template keycloak-setup restore-retain
 
 help:
 	@echo "Targets:"
@@ -16,6 +16,8 @@ help:
 	@echo "  make render         # Helm template (preflight)"
 	@echo "  make pods           # Lista pods no namespace"
 	@echo "  make sync-template  # Gera values.template.yaml anonimizado"
+	@echo "  make keycloak-setup # Provisiona clients/mappers no Keycloak"
+	@echo "  make restore-retain # Restore usando PV Retain + existingClaim"
 	@echo ""
 	@echo "Variables:"
 	@echo "  ENVIRONMENT=$(ENVIRONMENT)"
@@ -38,3 +40,9 @@ pods:
 
 sync-template:
 	./scripts/sync-values-template.sh values.prod.yaml values.template.yaml
+
+keycloak-setup:
+	./scripts/configure-keycloak.sh
+
+restore-retain:
+	ENVIRONMENT=$(ENVIRONMENT) VALUES_FILE=$(VALUES_FILE) ./scripts/restore-minio-retain.sh

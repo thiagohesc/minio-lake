@@ -66,6 +66,54 @@ extract_allowlist_ranges() {
   ' "$file"
 }
 
+extract_upload_value() {
+  local file="$1"
+  local key="$2"
+  local default_value="$3"
+  local value
+  value="$(awk -v k="$key" '
+    $0 ~ /^upload:/ { in_upload=1; next }
+    in_upload && $0 ~ /^[^[:space:]]/ { in_upload=0 }
+    in_upload && $0 ~ ("^[[:space:]]+" k ":[[:space:]]*") {
+      line=$0
+      sub("^[[:space:]]+" k ":[[:space:]]*", "", line)
+      gsub(/"/, "", line)
+      print line
+      exit
+    }
+  ' "$file")"
+
+  if [[ -z "$value" ]]; then
+    echo "$default_value"
+  else
+    echo "$value"
+  fi
+}
+
+extract_environment_url() {
+  local file="$1"
+  local key="$2"
+  awk -v k="$key" '
+    $0 ~ /^environment:/ { in_env=1; next }
+    in_env && $0 ~ /^[^[:space:]]/ { in_env=0 }
+    in_env && $0 ~ ("^[[:space:]]+" k ":[[:space:]]*") {
+      line=$0
+      sub("^[[:space:]]+" k ":[[:space:]]*", "", line)
+      gsub(/"/, "", line)
+      print line
+      exit
+    }
+  ' "$file"
+}
+
+extract_host_from_url() {
+  local url="$1"
+  url="${url#http://}"
+  url="${url#https://}"
+  url="${url%%/*}"
+  echo "$url"
+}
+
 require_cmd kubectl
 require_cmd helm
 validate_file_exists "$NAMESPACE_FILE"
@@ -89,6 +137,9 @@ if [[ "${#ALLOWLIST_RANGES[@]}" -eq 0 ]]; then
   exit 1
 fi
 
+UPLOAD_MAX_REQUEST_BODY_BYTES="$(extract_upload_value "$VALUES_FILE" "maxRequestBodyBytes" "21474836480")"
+UPLOAD_MEM_REQUEST_BODY_BYTES="$(extract_upload_value "$VALUES_FILE" "memRequestBodyBytes" "33554432")"
+
 ALLOWLIST_RENDERED_FILE="$(mktemp)"
 {
   cat <<'EOF'
@@ -108,6 +159,23 @@ EOF
 
 kubectl apply -f "$ALLOWLIST_RENDERED_FILE"
 rm -f "$ALLOWLIST_RENDERED_FILE"
+
+UPLOAD_MIDDLEWARE_RENDERED_FILE="$(mktemp)"
+cat > "$UPLOAD_MIDDLEWARE_RENDERED_FILE" <<EOF
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: minio-upload-buffering
+  namespace: minio
+spec:
+  buffering:
+    maxRequestBodyBytes: ${UPLOAD_MAX_REQUEST_BODY_BYTES}
+    memRequestBodyBytes: ${UPLOAD_MEM_REQUEST_BODY_BYTES}
+EOF
+
+kubectl apply -f "$UPLOAD_MIDDLEWARE_RENDERED_FILE"
+rm -f "$UPLOAD_MIDDLEWARE_RENDERED_FILE"
+
 kubectl apply -f "$SECRETS_FILE"
 
 helm repo add minio https://charts.min.io/ >/dev/null 2>&1 || true
@@ -125,5 +193,70 @@ helm upgrade --install "$RELEASE" "$CHART" \
   --wait \
   --timeout 10m \
   -f "$VALUES_FILE"
+
+MINIO_SERVER_URL="$(extract_environment_url "$VALUES_FILE" "MINIO_SERVER_URL")"
+MINIO_BROWSER_REDIRECT_URL="$(extract_environment_url "$VALUES_FILE" "MINIO_BROWSER_REDIRECT_URL")"
+MINIO_API_HOST="$(extract_host_from_url "$MINIO_SERVER_URL")"
+MINIO_CONSOLE_HOST="$(extract_host_from_url "$MINIO_BROWSER_REDIRECT_URL")"
+
+if [[ -z "$MINIO_API_HOST" || -z "$MINIO_CONSOLE_HOST" ]]; then
+  echo "ERROR: nao foi possivel extrair hosts de environment.MINIO_SERVER_URL/MINIO_BROWSER_REDIRECT_URL." >&2
+  exit 1
+fi
+
+INGRESSROUTE_RENDERED_FILE="$(mktemp)"
+cat > "$INGRESSROUTE_RENDERED_FILE" <<EOF
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: ${RELEASE}-console
+  namespace: ${NAMESPACE}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(\`${MINIO_CONSOLE_HOST}\`) && PathPrefix(\`/\`)
+      middlewares:
+        - name: minio-upload-buffering
+      services:
+        - name: ${RELEASE}-console
+          port: 9001
+          nativeLB: true
+  tls:
+    certResolver: cloudflare
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: ${RELEASE}-api
+  namespace: ${NAMESPACE}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(\`${MINIO_API_HOST}\`) && PathPrefix(\`/\`)
+      middlewares:
+        - name: minio-api-allowlist
+        - name: minio-upload-buffering
+      services:
+        - name: ${RELEASE}
+          port: 9000
+          nativeLB: true
+  tls:
+    certResolver: cloudflare
+EOF
+
+# Alguns clusters com CRDs antigos/duplicados do Traefik (traefik.io e traefik.containo.us)
+# podem falhar em apply/update de IngressRoute sem resourceVersion. Fazemos recriacao explicita.
+kubectl -n "$NAMESPACE" delete ingressroutes.traefik.io "${RELEASE}-console" "${RELEASE}-api" --ignore-not-found >/dev/null 2>&1 || true
+kubectl -n "$NAMESPACE" delete ingressroutes.traefik.containo.us "${RELEASE}-console" "${RELEASE}-api" --ignore-not-found >/dev/null 2>&1 || true
+kubectl create -f "$INGRESSROUTE_RENDERED_FILE"
+rm -f "$INGRESSROUTE_RENDERED_FILE"
+
+# O chart cria Ingress Kubernetes por padrao.
+# Neste cluster o Traefik nao alcanca Pod IP diretamente; por isso usamos IngressRoute com nativeLB=true.
+kubectl -n "$NAMESPACE" delete ingress "$RELEASE" "${RELEASE}-console" --ignore-not-found >/dev/null 2>&1 || true
 
 kubectl -n "$NAMESPACE" get pods
